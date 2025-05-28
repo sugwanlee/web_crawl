@@ -23,48 +23,68 @@ options.add_argument("--log-level=3")
 options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
 
 
-def get_views_and_upload_date(url):
-    driver = webdriver.Chrome(options=options)
-    wait = WebDriverWait(driver, 10)
+def get_views_and_upload_date(url, max_retries=3):
+    attempt = 0
+    while attempt < max_retries:
+        driver = webdriver.Chrome(options=options)
+        wait = WebDriverWait(driver, 10)
+        try:
+            driver.get(url)
 
-    try:
-        driver.get(url)
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "ytd-structured-description-content-renderer")))
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        root = soup.find("ytd-structured-description-content-renderer")
+            # 클릭하기 전에 제목 가져오기
+            title_elem = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "ytShortsVideoTitleViewModelShortsVideoTitle")))
+            title = title_elem.text if title_elem else "[제목 없음]"
 
-        if not root:
-            raise Exception("루트 태그를 찾을 수 없습니다.")
+            search_box = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "yt-shorts-video-title-view-model.ytShortsVideoTitleViewModelHostClickable")))
+            search_box.click()
 
-        # 1️⃣ 제목 + 해시태그 (공백 유지)
-        title_elem = root.select_one("#title yt-formatted-string")
-        title = title_elem.get_text(separator=" ", strip=True) if title_elem else "[제목 없음]"
+            # 페이지가 로드될 때까지 잠시 대기
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div#title yt-formatted-string")))
 
-        # 2️⃣ 조회수
-        views_elem = root.find(lambda tag: tag.name == "div" and tag.has_attr("aria-label") and "조회수" in tag["aria-label"])
-        views = views_elem["aria-label"].replace("조회수 ", "").replace("회", "").strip() if views_elem else "0"
+            # BS4로 렌더링된 HTML 파싱
+            soup = BeautifulSoup(driver.page_source, "html.parser")
 
-        # 3️⃣ 업로드 날짜
-        date_elem = root.find(lambda tag: tag.name == "div" and tag.has_attr("aria-label") and "." in tag["aria-label"])
-        if date_elem:
+            # 조회수 추출
+            views_elem = soup.find(lambda tag: tag.has_attr("aria-label") and "조회수" in tag["aria-label"])
+            views = views_elem["aria-label"].replace("조회수 ", "").replace("회", "").strip() if views_elem else "0"
+
+            # 업로드 날짜 추출
+            date_elem = soup.find(
+                lambda tag: tag.has_attr("aria-label") and 
+                (tag["aria-label"].count(".") >= 2 or "시간 전" in tag["aria-label"] or "분 전" in tag["aria-label"]) and 
+                tag.find_parent("factoid-renderer") is not None
+            )
+
+            if not date_elem:
+                raise Exception("날짜 정보를 찾을 수 없음")
+
             raw = date_elem["aria-label"]
-            parts = [p.strip() for p in raw.replace(".", "").split()]
-            year, month, day = parts
-            month = month.zfill(2)
-            day = day.zfill(2)
-            upload_date = f"{year}-{month}-{day}"
-        else:
-            upload_date = ""
 
-        return title, views, upload_date
+            if "시간 전" in raw:
+                hours = int(raw.replace("시간 전", "").strip())
+                upload_date = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d")
+            elif "분 전" in raw:
+                minutes = int(raw.replace("분 전", "").strip())
+                upload_date = (datetime.now() - timedelta(minutes=minutes)).strftime("%Y-%m-%d")
+            else:
+                parts = [p.strip() for p in raw.replace(".", "").split()]
+                year, month, day = parts
+                month = month.zfill(2)
+                day = day.zfill(2)
+                upload_date = f"{year}-{month}-{day}"
 
-    except Exception as e:
-        print(f"[에러] {url} 처리 중 문제 발생: {e}")
-        return "", "0", ""
+            return title, views, upload_date
 
-    finally:
-        driver.quit()
+        except Exception as e:
+            print(f"[에러] {url} 시도 {attempt + 1}/{max_retries}: {e}")
+            attempt += 1
+            time.sleep(1)  # 재시도 전 대기
 
+        finally:
+            driver.quit()
+
+    # 모든 시도 실패
+    raise Exception(f"[실패] {url} 모든 재시도 실패")
 
 
 def get_channel_info(url):
@@ -230,8 +250,8 @@ def get_info(urls):
 
 
 
-# urls = ['http://www.youtube.com/channel/UCuO9qb9PdlO_WFWd_wrTBkg', 'http://www.youtube.com/channel/UC1lhiz5lHfCw2rLZWqwhxnw', 'http://www.youtube.com/channel/UCgeTWh3tYz3LwkhCzbUsVzQ', 'http://www.youtube.com/channel/UC4LrX_37ZWrNcMS2NtXgKrA', 'http://www.youtube.com/channel/UCO8gltLqmlaN3a6M9i55OLA', 'http://www.youtube.com/channel/UCrRSAxplRF1_3MjoMC9_W9Q', 'http://www.youtube.com/channel/UCjHC_N682cOiH3GZ4AjeCDQ', 'http://www.youtube.com/channel/UCvBvw9pYAP5tB2quJ-BiF_A', 'http://www.youtube.com/channel/UC31ZzQkagJzsSHg2a0MXLeA', 'http://www.youtube.com/channel/UCi1Z70ZED1eCl8dJB9E4JTw', 'http://www.youtube.com/channel/UClL7bo4m9EmOGgSyn2oGfvA', 'http://www.youtube.com/channel/UC2_aGeWBT47euc6w5MCF2lw', 'http://www.youtube.com/channel/UCYwLHEPzSNs8v1Ko4hJonAg', 'http://www.youtube.com/channel/UCeUlwIfwei6U3VnTsUxNC9w', 'http://www.youtube.com/channel/UC8nUDc4Fc4VvZkRP1oePY-w', 'http://www.youtube.com/channel/UCKIBIgAKYheiaaC7hVHJzrQ', 'http://www.youtube.com/channel/UCp8p0NTwUjxU5G3ZqEn2FQg', 'http://www.youtube.com/channel/UCkavWA4JMTdOKfLr1Qilx8g', 'http://www.youtube.com/channel/UC2hfZKwDwWmhuqJbjKEh3aQ', 'http://www.youtube.com/channel/UCcN0eBs98KRjSoqBaPLq1jw', 'http://www.youtube.com/channel/UCFS3tu-34eounHIcU9Hu_xg', 'http://www.youtube.com/channel/UCYbqe2OyzTyPn8-vtUCJM6Q', 'http://www.youtube.com/channel/UC4Lv-mrKtNwv1YNZUpw1ftw', 'http://www.youtube.com/channel/UCfnmh_tZqEA095970xoPhUQ', 'http://www.youtube.com/channel/UCpyYMUbVskUHlOrPrGfT4Rw', 'http://www.youtube.com/channel/UC1TQrg-nROTEyRFewdoORyQ', 'http://www.youtube.com/channel/UC_hbyIBAKfTNXbQU8p5YHzg', 'http://www.youtube.com/channel/UCZ5e3Gd0BTbOLIfTWlcbReA', 'http://www.youtube.com/channel/UCAA_OMo9r0b-iUs3VrPuwPw', 'http://www.youtube.com/channel/UCHisNUl3gc00Ywy-o0ttypw', 'http://www.youtube.com/channel/UCbnz_dXMThEAaq5lz6q6IGA', 'http://www.youtube.com/channel/UCijXlGG2r5Onjo4NnB29zbw','http://www.youtube.com/channel/UCCi4CqLzemXkZ-6fQC3A3ag']
-urls = ['https://www.youtube.com/@%EC%87%BC%EC%B8%A0%EB%AA%85%EC%9E%91-q9z']
+urls = ['http://www.youtube.com/channel/UCuO9qb9PdlO_WFWd_wrTBkg', 'http://www.youtube.com/channel/UC1lhiz5lHfCw2rLZWqwhxnw', 'http://www.youtube.com/channel/UCgeTWh3tYz3LwkhCzbUsVzQ', 'http://www.youtube.com/channel/UC4LrX_37ZWrNcMS2NtXgKrA', 'http://www.youtube.com/channel/UCO8gltLqmlaN3a6M9i55OLA', 'http://www.youtube.com/channel/UCrRSAxplRF1_3MjoMC9_W9Q', 'http://www.youtube.com/channel/UCjHC_N682cOiH3GZ4AjeCDQ', 'http://www.youtube.com/channel/UCvBvw9pYAP5tB2quJ-BiF_A', 'http://www.youtube.com/channel/UC31ZzQkagJzsSHg2a0MXLeA', 'http://www.youtube.com/channel/UCi1Z70ZED1eCl8dJB9E4JTw', 'http://www.youtube.com/channel/UClL7bo4m9EmOGgSyn2oGfvA', 'http://www.youtube.com/channel/UC2_aGeWBT47euc6w5MCF2lw', 'http://www.youtube.com/channel/UCYwLHEPzSNs8v1Ko4hJonAg', 'http://www.youtube.com/channel/UCeUlwIfwei6U3VnTsUxNC9w', 'http://www.youtube.com/channel/UC8nUDc4Fc4VvZkRP1oePY-w', 'http://www.youtube.com/channel/UCKIBIgAKYheiaaC7hVHJzrQ', 'http://www.youtube.com/channel/UCp8p0NTwUjxU5G3ZqEn2FQg', 'http://www.youtube.com/channel/UCkavWA4JMTdOKfLr1Qilx8g', 'http://www.youtube.com/channel/UC2hfZKwDwWmhuqJbjKEh3aQ', 'http://www.youtube.com/channel/UCcN0eBs98KRjSoqBaPLq1jw', 'http://www.youtube.com/channel/UCFS3tu-34eounHIcU9Hu_xg', 'http://www.youtube.com/channel/UCYbqe2OyzTyPn8-vtUCJM6Q', 'http://www.youtube.com/channel/UC4Lv-mrKtNwv1YNZUpw1ftw', 'http://www.youtube.com/channel/UCfnmh_tZqEA095970xoPhUQ', 'http://www.youtube.com/channel/UCpyYMUbVskUHlOrPrGfT4Rw', 'http://www.youtube.com/channel/UC1TQrg-nROTEyRFewdoORyQ', 'http://www.youtube.com/channel/UC_hbyIBAKfTNXbQU8p5YHzg', 'http://www.youtube.com/channel/UCZ5e3Gd0BTbOLIfTWlcbReA', 'http://www.youtube.com/channel/UCAA_OMo9r0b-iUs3VrPuwPw', 'http://www.youtube.com/channel/UCHisNUl3gc00Ywy-o0ttypw', 'http://www.youtube.com/channel/UCbnz_dXMThEAaq5lz6q6IGA', 'http://www.youtube.com/channel/UCijXlGG2r5Onjo4NnB29zbw','http://www.youtube.com/channel/UCCi4CqLzemXkZ-6fQC3A3ag']
+# urls = ['https://www.youtube.com/@%EC%87%BC%EC%B8%A0%EB%AA%85%EC%9E%91-q9z']
 start_time = time.time()
 get_info(urls)
 end_time = time.time()
