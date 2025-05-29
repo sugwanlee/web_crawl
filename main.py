@@ -23,7 +23,7 @@ options.add_argument("--log-level=3")
 options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
 
 
-def get_views_and_upload_date(url, max_retries=3):
+def get_views_and_upload_date(url, max_retries=10):
     attempt = 0
     while attempt < max_retries:
         driver = webdriver.Chrome(options=options)
@@ -33,6 +33,10 @@ def get_views_and_upload_date(url, max_retries=3):
 
             # 클릭하기 전에 제목 가져오기
             title_elem = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "ytShortsVideoTitleViewModelShortsVideoTitle")))
+
+            if not title_elem:
+                raise Exception("제목 정보를 찾을 수 없음")
+            
             title = title_elem.text if title_elem else "[제목 없음]"
 
             search_box = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "yt-shorts-video-title-view-model.ytShortsVideoTitleViewModelHostClickable")))
